@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AR UGC Prototype - Advanced</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            background: #000;
+            color: white;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+        }
+        
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        
+        #webcam, #output {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            transform: scaleX(-1);
+        }
+        
+        #output {
+            z-index: 2;
+        }
+        
+        #canvas3d {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 3;
+            background: rgba(0,0,0,0.7);
+            padding: 15px;
+            border-radius: 10px;
+            display: flex;
+            gap: 10px;
+        }
+        
+        button {
+            background: #ff4081;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        button:hover {
+            background: #f50057;
+        }
+        
+        #status {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 3;
+            background: rgba(0,0,0,0.7);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        
+        .clothing-option {
+            background: rgba(255,255,255,0.1);
+            padding: 5px 10px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        
+        .clothing-option:hover {
+            background: rgba(255,255,255,0.2);
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <video id="webcam" playsinline></video>
+        <canvas id="output"></canvas>
+        <canvas id="canvas3d"></canvas>
+        
+        <div id="status">
+            <div>Status: <span id="statusText">Loading...</span></div>
+            <div>Hand Position: <span id="handPos">0, 0</span></div>
+            <div>Clothing Physics: <span id="physicsStatus">Inactive</span></div>
+        </div>
+        
+        <div id="controls">
+            <div>
+                <h3>Clothing Options</h3>
+                <div style="display: flex; gap: 5px;">
+                    <div class="clothing-option" onclick="changeClothing('bikini')">Bikini</div>
+                    <div class="clothing-option" onclick="changeClothing('dress')">Dress</div>
+                    <div class="clothing-option" onclick="changeClothing('tshirt')">T-Shirt</div>
+                </div>
+            </div>
+            
+            <div style="margin-left: 20px;">
+                <h3>Physics Settings</h3>
+                <div>
+                    <label>Gravity: <input type="range" id="gravity" min="0" max="100" value="30"></label><br>
+                    <label>Wind: <input type="range" id="wind" min="0" max="100" value="0"></label>
+                </div>
+            </div>
+            
+            <div style="margin-left: 20px;">
+                <h3>Controls</h3>
+                <button onclick="toggleWebcam()">Toggle Camera</button>
+                <button onclick="resetPhysics()">Reset Physics</button>
+                <button onclick="calibrate()">Calibrate</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        let currentClothing = 'bikini';
+        let isWebcamActive = true;
+        let handPosition = { x: 0, y: 0 };
+        let clothingPhysics = [];
+        
+        // Initialize Pose Detection
+        const pose = new Pose({
+            locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+            }
+        });
+        
+        pose.setOptions({
+            modelComplexity: 1,
+            smoothLandmarks: true,
+            enableSegmentation: false,
+            smoothSegmentation: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        
+        pose.onResults(onPoseResults);
+        
+        // Initialize Three.js for 3D visualization
+        let scene, camera, renderer;
+        let clothingMeshes = [];
+        
+        function initThreeJS() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('canvas3d'), alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            
+            // Add lights
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(1, 1, 1);
+            scene.add(directionalLight);
+            
+            // Create a simple character model (simplified for demo)
+            createCharacter();
+            
+            camera.position.z = 5;
+            
+            // Start animation loop
+            animate();
+        }
+        
+        function createCharacter() {
+            // Create body
+            const bodyGeometry = new THREE.CylinderGeometry(0.5, 0.7, 2, 32);
+            const bodyMaterial = new THREE.MeshPhongMaterial({ color: 0xffccaa });
+            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+            scene.add(body);
+            
+            // Create clothing
+            createClothing();
+        }
+        
+        function createClothing() {
+            // Clear existing clothing
+            clothingMeshes.forEach(mesh => scene.remove(mesh));
+            clothingMeshes = [];
+            clothingPhysics = [];
+            
+            if (currentClothing === 'bikini') {
+                // Create bikini top
+                const topGeometry = new THREE.SphereGeometry(0.3, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+                const topMaterial = new THREE.MeshPhongMaterial({ color: 0xff4081 });
+                const top = new THREE.Mesh(topGeometry, topMaterial);
+                top.position.y = 0.3;
+                top.position.x = -0.2;
+                
+                const top2 = top.clone();
+                top2.position.x = 0.2;
+                
+                // Add physics to bikini top
+                clothingPhysics.push({
+                    mesh: top,
+                    originalY: 0.3,
+                    physicsY: 0.3,
+                    velocity: 0,
+                    isBeingPulled: false
+                });
+                
+                clothingPhysics.push({
+                    mesh: top2,
+                    originalY: 0.3,
+                    physicsY: 0.3,
+                    velocity: 0,
+                    isBeingPulled: false
+                });
+                
+                scene.add(top);
+                scene.add(top2);
+                clothingMeshes.push(top, top2);
+            }
+            
+            // Add bottom clothing based on selection
+            let bottomMaterial;
+            switch(currentClothing) {
+                case 'bikini':
+                    bottomMaterial = new THREE.MeshPhongMaterial({ color: 0xff4081 });
+                    break;
+                case 'dress':
+                    bottomMaterial = new THREE.MeshPhongMaterial({ color: 0x4caf50 });
+                    break;
+                case 'tshirt':
+                    bottomMaterial = new THREE.MeshPhongMaterial({ color: 0x2196f3 });
+                    break;
+            }
+            
+            const bottomGeometry = new THREE.CylinderGeometry(0.6, 0.8, 0.5, 32);
+            const bottom = new THREE.Mesh(bottomGeometry, bottomMaterial);
+            bottom.position.y = -0.5;
+            
+            clothingPhysics.push({
+                mesh: bottom,
+                originalY: -0.5,
+                physicsY: -0.5,
+                velocity: 0,
+                isBeingPulled: false
+            });
+            
+            scene.add(bottom);
+            clothingMeshes.push(bottom);
+        }
+        
+        function updateClothingPhysics(handX, handY) {
+            const gravity = document.getElementById('gravity').value / 100;
+            const wind = document.getElementById('wind').value / 50;
+            
+            // Convert hand position to 3D space
+            const screenX = (handX / window.innerWidth) * 2 - 1;
+            const screenY = -(handY / window.innerHeight) * 2 + 1;
+            
+            clothingPhysics.forEach(item => {
+                const mesh = item.mesh;
+                const distanceToHand = Math.sqrt(
+                    Math.pow(mesh.position.x - screenX * 3, 2) +
+                    Math.pow(mesh.position.y - screenY * 2, 2)
+                );
+                
+                // If hand is close to clothing, apply pull effect
+                if (distanceToHand < 0.5) {
+                    item.isBeingPulled = true;
+                    item.physicsY = item.originalY - 0.3;
+                    document.getElementById('physicsStatus').textContent = 'Pulling';
+                } else {
+                    item.isBeingPulled = false;
+                    
+                    // Apply gravity and wind
+                    item.velocity += gravity;
+                    item.physicsY -= item.velocity;
+                    
+                    // Apply wind
+                    mesh.position.x += wind;
+                    
+                    // Bounce effect when hitting original position
+                    if (item.physicsY < item.originalY) {
+                        item.physicsY = item.originalY;
+                        item.velocity = -item.velocity * 0.5; // Dampen bounce
+                    }
+                    
+                    // Dampen velocity over time
+                    item.velocity *= 0.98;
+                }
+                
+                // Update mesh position
+                mesh.position.y = item.physicsY;
+                
+                // Add slight rotation for realistic movement
+                if (!item.isBeingPulled) {
+                    mesh.rotation.y = Math.sin(Date.now() * 0.001 + mesh.position.x) * 0.1;
+                }
+            });
+        }
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // Update clothing physics
+            updateClothingPhysics(handPosition.x, handPosition.y);
+            
+            // Rotate scene slowly
+            scene.rotation.y += 0.001;
+            
+            renderer.render(scene, camera);
+        }
+        
+        function onPoseResults(results) {
+            const canvas = document.getElementById('output');
+            const ctx = canvas.getContext('2d');
+            
+            // Set canvas dimensions
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw webcam frame
+            if (results.image) {
+                ctx.save();
+                ctx.scale(-1, 1);
+                ctx.translate(-canvas.width, 0);
+                ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+                ctx.restore();
+            }
+            
+            // Draw pose landmarks
+            if (results.poseLandmarks) {
+                drawLandmarks(ctx, results.poseLandmarks);
+                
+                // Get hand positions
+                const leftHand = results.poseLandmarks[19]; // Left wrist
+                const rightHand = results.poseLandmarks[20]; // Right wrist
+                
+                if (leftHand && rightHand) {
+                    // Use the hand closest to the center
+                    const leftDist = Math.abs(leftHand.x - 0.5);
+                    const rightDist = Math.abs(rightHand.x - 0.5);
+                    
+                    const hand = leftDist < rightDist ? leftHand : rightHand;
+                    
+                    // Update hand position
+                    handPosition.x = hand.x * canvas.width;
+                    handPosition.y = hand.y * canvas.height;
+                    
+                    // Update display
+                    document.getElementById('handPos').textContent = 
+                        `${Math.round(hand.x * 100)}%, ${Math.round(hand.y * 100)}%`;
+                    
+                    // Draw hand indicator
+                    ctx.beginPath();
+                    ctx.arc(hand.x * canvas.width, hand.y * canvas.height, 20, 0, Math.PI * 2);
+                    ctx.fillStyle = 'rgba(255, 64, 129, 0.5)';
+                    ctx.fill();
+                    ctx.strokeStyle = '#ff4081';
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                }
+            }
+        }
+        
+        function drawLandmarks(ctx, landmarks) {
+            ctx.fillStyle = '#00ff00';
+            landmarks.forEach(landmark => {
+                ctx.beginPath();
+                ctx.arc(
+                    landmark.x * ctx.canvas.width,
+                    landmark.y * ctx.canvas.height,
+                    5, 0, Math.PI * 2
+                );
+                ctx.fill();
+            });
+        }
+        
+        // Webcam functions
+        async function initWebcam() {
+            const video = document.getElementById('webcam');
+            
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 1280, height: 720, facingMode: 'user' }
+                });
+                video.srcObject = stream;
+                
+                // Start pose detection
+                const camera = new Camera(video, {
+                    onFrame: async () => {
+                        await pose.send({ image: video });
+                    },
+                    width: 1280,
+                    height: 720
+                });
+                camera.start();
+                
+                document.getElementById('statusText').textContent = 'Tracking Active';
+            } catch (error) {
+                console.error('Error accessing webcam:', error);
+                document.getElementById('statusText').textContent = 'Webcam Error';
+            }
+        }
+        
+        function toggleWebcam() {
+            isWebcamActive = !isWebcamActive;
+            const video = document.getElementById('webcam');
+            video.style.display = isWebcamActive ? 'block' : 'none';
+            document.getElementById('output').style.display = isWebcamActive ? 'block' : 'none';
+        }
+        
+        function changeClothing(type) {
+            currentClothing = type;
+            createClothing();
+        }
+        
+        function resetPhysics() {
+            clothingPhysics.forEach(item => {
+                item.physicsY = item.originalY;
+                item.velocity = 0;
+                item.isBeingPulled = false;
+            });
+            document.getElementById('physicsStatus').textContent = 'Reset';
+        }
+        
+        function calibrate() {
+            document.getElementById('statusText').textContent = 'Calibrating...';
+            setTimeout(() => {
+                document.getElementById('statusText').textContent = 'Calibrated';
+            }, 1000);
+        }
+        
+        // Initialize everything
+        window.onload = function() {
+            initThreeJS();
+            initWebcam();
+            
+            // Handle window resize
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        };
+    </script>
+</body>
+</html>
